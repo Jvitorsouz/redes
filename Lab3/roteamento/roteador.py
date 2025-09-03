@@ -5,9 +5,62 @@ import json
 import threading
 import time
 from argparse import ArgumentParser
+import copy
 
 import requests
 from flask import Flask, jsonify, request
+
+# --- FUNÇÕES AUXILIARES PARA MANIPULAÇÃO DE REDES (PASSO 3) ---
+
+def ip_para_int(ip_str):
+    """Converte um endereço IP string (ex: '192.168.1.0') para um inteiro de 32 bits."""
+    octetos = ip_str.split('.')
+    return (int(octetos[0]) << 24) + (int(octetos[1]) << 16) + (int(octetos[2]) << 8) + int(octetos[3])
+
+def int_para_ip(ip_int):
+    """Converte um inteiro de 32 bits de volta para um endereço IP string."""
+    return f"{(ip_int >> 24) & 0xFF}.{(ip_int >> 16) & 0xFF}.{(ip_int >> 8) & 0xFF}.{ip_int & 0xFF}"
+
+def tentar_sumarizar(net1_str, net2_str):
+    """
+    Tenta sumarizar duas redes no formato CIDR (ex: '192.168.20.0/24').
+    Retorna a nova rede sumarizada se for possível, caso contrário, retorna None.
+    """
+    try:
+        ip1_str, pref1_str = net1_str.split('/')
+        ip2_str, pref2_str = net2_str.split('/')
+        prefixo1, prefixo2 = int(pref1_str), int(pref2_str)
+
+        # Condição 1: As redes devem ter o mesmo tamanho de prefixo para serem agregadas.
+        if prefixo1 != prefixo2:
+            return None
+
+        # O novo prefixo será 1 bit menor (bloco maior).
+        novo_prefixo = prefixo1 - 1
+        if novo_prefixo < 0: # Não pode ser menor que 0
+            return None
+
+        # Converte IPs para inteiros para a mágica de bits.
+        ip1_int = ip_para_int(ip1_str)
+        ip2_int = ip_para_int(ip2_str)
+
+        # Cria a máscara para a super-rede. Ex: para /23, a máscara tem 23 bits '1'.
+        # `(1 << (32 - novo_prefixo)) - 1` cria os bits '0' à direita.
+        # `~` inverte, criando os bits '1' à esquerda (a máscara).
+        mascara = ~((1 << (32 - novo_prefixo)) - 1) & 0xFFFFFFFF
+
+        # Condição 2: Ambas as redes originais, quando mascaradas com a nova
+        # máscara da super-rede, devem resultar na mesma rede base.
+        if (ip1_int & mascara) == (ip2_int & mascara):
+            # Sucesso! A rede base é o resultado da operação AND.
+            nova_rede_int = ip1_int & mascara
+            return f"{int_para_ip(nova_rede_int)}/{novo_prefixo}"
+        else:
+            # As redes não são "vizinhas" contíguas para esta agregação.
+            return None
+    except (ValueError, IndexError):
+        # Trata casos onde o formato da string não é 'ip/prefixo'.
+        return None
 
 class Router:
     """
@@ -304,54 +357,3 @@ if __name__ == '__main__':
     # Inicia o servidor Flask
     app.run(host='0.0.0.0', port=args.port, debug=False)
 
-# --- FUNÇÕES AUXILIARES PARA MANIPULAÇÃO DE REDES (PASSO 3) ---
-
-def ip_para_int(ip_str):
-    """Converte um endereço IP string (ex: '192.168.1.0') para um inteiro de 32 bits."""
-    octetos = ip_str.split('.')
-    return (int(octetos[0]) << 24) + (int(octetos[1]) << 16) + (int(octetos[2]) << 8) + int(octetos[3])
-
-def int_para_ip(ip_int):
-    """Converte um inteiro de 32 bits de volta para um endereço IP string."""
-    return f"{(ip_int >> 24) & 0xFF}.{(ip_int >> 16) & 0xFF}.{(ip_int >> 8) & 0xFF}.{ip_int & 0xFF}"
-
-def tentar_sumarizar(net1_str, net2_str):
-    """
-    Tenta sumarizar duas redes no formato CIDR (ex: '192.168.20.0/24').
-    Retorna a nova rede sumarizada se for possível, caso contrário, retorna None.
-    """
-    try:
-        ip1_str, pref1_str = net1_str.split('/')
-        ip2_str, pref2_str = net2_str.split('/')
-        prefixo1, prefixo2 = int(pref1_str), int(pref2_str)
-
-        # Condição 1: As redes devem ter o mesmo tamanho de prefixo para serem agregadas.
-        if prefixo1 != prefixo2:
-            return None
-
-        # O novo prefixo será 1 bit menor (bloco maior).
-        novo_prefixo = prefixo1 - 1
-        if novo_prefixo < 0: # Não pode ser menor que 0
-            return None
-
-        # Converte IPs para inteiros para a mágica de bits.
-        ip1_int = ip_para_int(ip1_str)
-        ip2_int = ip_para_int(ip2_str)
-
-        # Cria a máscara para a super-rede. Ex: para /23, a máscara tem 23 bits '1'.
-        # `(1 << (32 - novo_prefixo)) - 1` cria os bits '0' à direita.
-        # `~` inverte, criando os bits '1' à esquerda (a máscara).
-        mascara = ~((1 << (32 - novo_prefixo)) - 1) & 0xFFFFFFFF
-
-        # Condição 2: Ambas as redes originais, quando mascaradas com a nova
-        # máscara da super-rede, devem resultar na mesma rede base.
-        if (ip1_int & mascara) == (ip2_int & mascara):
-            # Sucesso! A rede base é o resultado da operação AND.
-            nova_rede_int = ip1_int & mascara
-            return f"{int_para_ip(nova_rede_int)}/{novo_prefixo}"
-        else:
-            # As redes não são "vizinhas" contíguas para esta agregação.
-            return None
-    except (ValueError, IndexError):
-        # Trata casos onde o formato da string não é 'ip/prefixo'.
-        return None
